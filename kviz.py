@@ -1,10 +1,11 @@
 import streamlit as st
 import pandas as pd
 import random
+import streamlit.components.v1 as components
 
 st.set_page_config(page_title="Hasičský Trenažér", page_icon="🚒", layout="centered")
 
-# --- JS SKRIPT PRO OVLÁDÁNÍ (ŠIPKY, ENTER, ČÍSLA) ---
+# --- JS SKRIPT PRO OVLÁDÁNÍ ---
 def inject_control_logic():
     components.html(
         """
@@ -13,9 +14,9 @@ def inject_control_logic():
         let currentIndex = 0;
 
         function getButtons() {
-            // Najde všechna standardní tlačítka v hlavním bloku, která nejsou disabled
+            // Hledáme tlačítka odpovědí nebo tlačítko Další v hlavním kontejneru
             return Array.from(doc.querySelectorAll('button[data-testid="baseButton-secondary"], button[data-testid="baseButton-primary"]'))
-                .filter(btn => !btn.disabled && !btn.innerText.includes('Restart'));
+                .filter(btn => !btn.disabled && (btn.innerText.length > 0) && !btn.innerText.includes('Restart'));
         }
 
         function highlight(btns) {
@@ -23,11 +24,9 @@ def inject_control_logic():
                 if (i === currentIndex) {
                     b.style.outline = '4px solid #FF4B4B';
                     b.style.outlineOffset = '2px';
-                    b.style.backgroundColor = 'rgba(255, 75, 75, 0.1)';
                     b.focus();
                 } else {
                     b.style.outline = 'none';
-                    b.style.backgroundColor = '';
                 }
             });
         }
@@ -36,7 +35,6 @@ def inject_control_logic():
             const btns = getButtons();
             if (btns.length === 0) return;
 
-            // Pokud je tam tlačítko "Další otázka", Enter ho stiskne hned
             const nextBtn = btns.find(b => b.innerText.includes('Další otázka'));
 
             if (e.key === 'ArrowDown') {
@@ -50,20 +48,25 @@ def inject_control_logic():
             } else if (e.key === 'Enter') {
                 if (nextBtn) {
                     nextBtn.click();
+                    currentIndex = 0;
                 } else if (btns[currentIndex]) {
                     btns[currentIndex].click();
+                    currentIndex = 0;
                 }
-                currentIndex = 0;
             } else if (['1', '2', '3'].includes(e.key)) {
                 const idx = parseInt(e.key) - 1;
                 if (btns[idx]) btns[idx].click();
             }
         };
 
-        // Automatické zvýraznění prvního tlačítka při změně stránky
+        // Pozvolnější sledování změn (řeší mizení prvků při načítání)
+        let timeout;
         const observer = new MutationObserver(() => {
-            const btns = getButtons();
-            if (btns.length > 0) highlight(btns);
+            clearTimeout(timeout);
+            timeout = setTimeout(() => {
+                const btns = getButtons();
+                if (btns.length > 0) highlight(btns);
+            }, 100); 
         });
         observer.observe(doc.body, { childList: true, subtree: true });
         </script>
@@ -74,10 +77,17 @@ def inject_control_logic():
 # --- CSS PRO VZHLED ---
 st.markdown("""
     <style>
+    /* Oprava kontrastu */
     .stSubheader p { color: #000000 !important; font-weight: bold !important; font-size: 1.2rem !important; }
     .stCaption { color: #1B1D23 !important; font-size: 0.9rem !important; }
+    
+    /* Větší tlačítka */
     div[data-testid="stButton"] button { min-height: 3.5rem !important; border-radius: 10px !important; }
-    #MainMenu, footer, header {visibility: hidden;}
+
+    /* MENU ZDE NECHÁVÁME VIDITELNÉ (smazáno visibility: hidden) */
+    
+    /* Větší prostor nahoře */
+    .block-container { padding-top: 3rem !important; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -95,7 +105,9 @@ def load_data():
                     "moznosti": [str(df_raw.iloc[i+1, 1]), str(df_raw.iloc[i+2, 1]), str(df_raw.iloc[i+3, 1])]
                 })
         return seznam
-    except: return []
+    except Exception as e:
+        st.error(f"Chyba při načítání Excelu: {e}")
+        return []
 
 # --- 2. SESSION STATE ---
 if 'fronta' not in st.session_state:
@@ -103,6 +115,7 @@ if 'fronta' not in st.session_state:
     st.session_state.historie = []
     st.session_state.idx = random.randint(0, len(st.session_state.fronta)-1) if st.session_state.fronta else 0
     st.session_state.odpovezeno = False
+    st.session_state.vysledek = None
 
 if 'mix' not in st.session_state and st.session_state.fronta:
     m = st.session_state.fronta[st.session_state.idx]["moznosti"][:]
@@ -110,68 +123,62 @@ if 'mix' not in st.session_state and st.session_state.fronta:
     st.session_state.mix = m
 
 # --- 3. LOGIKA ---
-def potvrdit():
-    st.session_state.odpovezeno = True
+def klik_odpoved(volba):
+    if not st.session_state.odpovezeno:
+        aktualni = st.session_state.fronta[st.session_state.idx]
+        st.session_state.odpovezeno = True
+        is_correct = (volba == aktualni["spravna"])
+        st.session_state.vysledek = "ok" if is_correct else "error"
+        st.session_state.historie.insert(0, {
+            "vysledek": "✅" if is_correct else "❌",
+            "otazka": aktualni["text"],
+            "spravna": aktualni["spravna"]
+        })
+        st.session_state.historie = st.session_state.historie[:5]
 
 def klik_dalsi():
-    aktualni = st.session_state.fronta[st.session_state.idx]
-    is_correct = (st.session_state.vyber == aktualni["spravna"])
-    
-    # Uložit do historie
-    st.session_state.historie.insert(0, {
-        "vysledek": "✅" if is_correct else "❌",
-        "otazka": aktualni["text"],
-        "spravna": aktualni["spravna"]
-    })
-    st.session_state.historie = st.session_state.historie[:5]
-
-    # Pokud správně, vyřadit z fronty
-    if is_correct:
+    if st.session_state.vysledek == "ok":
         st.session_state.fronta.pop(st.session_state.idx)
-    
-    # Reset pro další kolo
     if st.session_state.fronta:
         st.session_state.idx = random.randint(0, len(st.session_state.fronta)-1)
         st.session_state.odpovezeno = False
+        st.session_state.vysledek = None
         if 'mix' in st.session_state: del st.session_state.mix
 
 # --- 4. UI ---
-st.title("🚒 Hasičský Trenažér")
+inject_control_logic()
 
 if not st.session_state.fronta:
     st.success("🎉 Hotovo! Všechny otázky umíte.")
-    if st.button("Začít znovu"):
+    if st.button("Začít znovu", type="primary"):
         st.session_state.clear()
         st.rerun()
 else:
-    q = st.session_state.fronta[st.session_state.idx]
+    zbiva = len(st.session_state.fronta)
+    st.progress(1 - (zbiva / 200) if zbiva <= 200 else 0)
     
-    st.progress(1 - (len(st.session_state.fronta) / 200))
+    q = st.session_state.fronta[st.session_state.idx]
     st.subheader(q["text"])
 
-    # KLÍČOVÝ PRVEK: radio button lze ovládat šipkami (když na něj kliknete)
-    st.radio(
-        "Vyberte odpověď šipkami:",
-        st.session_state.mix,
-        key="vyber",
-        disabled=st.session_state.odpovezeno,
-        label_visibility="collapsed"
-    )
+    for i, m in enumerate(st.session_state.mix):
+        st.button(
+            m, 
+            key=f"b{i}", 
+            on_click=klik_odpoved, 
+            args=(m,),
+            use_container_width=True, 
+            disabled=st.session_state.odpovezeno
+        )
 
-    st.write("") # Mezera
-
-    if not st.session_state.odpovezeno:
-        st.button("Potvrdit (Enter)", on_click=potvrdit, type="primary", use_container_width=True)
-    else:
-        if st.session_state.vyber == q["spravna"]:
-            st.success(f"✅ Správně!")
+    if st.session_state.odpovezeno:
+        if st.session_state.vysledek == "ok":
+            st.success("✅ Správně!")
         else:
-            st.error(f"❌ Chyba! Správná odpověď: {q['spravna']}")
+            st.error(f"❌ Chyba! Správně: {q['spravna']}")
         
-        st.button("Další otázka (Enter)", on_click=klik_dalsi, type="primary", use_container_width=True)
+        st.button("Další otázka (Enter)", key="btn_next", on_click=klik_dalsi, type="primary", use_container_width=True)
 
-    # Historie
     if st.session_state.historie:
         st.write("---")
         for h in st.session_state.historie:
-            st.caption(f"{h['vysledek']} {h['otazka'][:80]}...")
+            st.caption(f"{h['vysledek']} {h['otazka'][:80]}... ({h['spravna']})")
