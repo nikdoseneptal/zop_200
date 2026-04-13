@@ -176,7 +176,7 @@ else:
         else:
             st.error(f"❌ Chyba! Správně: {q['spravna']}")
         
-        st.button("Další otázka (Enter)", key="btn_next", on_click=klik_dalsi, type="primary", use_container_width=True)
+        st.button("Další otázka", key="btn_next", on_click=klik_dalsi, type="primary", use_container_width=True)
 
     if st.session_state.historie:
         st.write("---")
